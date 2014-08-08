@@ -300,7 +300,7 @@ int wifi_load_driver()
 		     read(pid_fd, buf, 4);
 		     ALOGE("node = %s, pid = %s", node, buf);
 		     if (pid_fd > 0) {
-			 if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0) {
+			 if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0 || strcmp(buf, "817a") == 0) {
 			     ALOGE("rtl8192cu Wi-Fi Module 3");
 			     //wifi module 3 rtl8192cu
 			     strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME2);
