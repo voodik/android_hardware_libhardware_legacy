@@ -318,7 +318,16 @@ int wifi_load_driver()
 			     close(pid_fd);
 			     close(vid_fd);
 			     break;
-			 }
+             } else if (strcmp(buf, "5370") == 0) {
+				ALOGE("rt5370 Wi-Fi Module 1");
+				//wifi module 1 rt5370
+				strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME3);
+				strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME3 " ");
+				strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH3);
+				close(pid_fd);
+				close(vid_fd);
+				break;
+             }
 			 close(pid_fd);
 		     }
 		 }
