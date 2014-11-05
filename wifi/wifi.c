@@ -118,7 +118,7 @@ static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 char DRIVER_MODULE_NAME[16]  = WIFI_DRIVER_MODULE_NAME;
 char DRIVER_MODULE_TAG[16]   = WIFI_DRIVER_MODULE_NAME " ";
 char DRIVER_MODULE_PATH[64]  = WIFI_DRIVER_MODULE_PATH;
-static const char DRIVER_MODULE_ARG[]   = WIFI_DRIVER_MODULE_ARG;
+char DRIVER_MODULE_ARG[16]   = WIFI_DRIVER_MODULE_ARG;
 static const char DRIVER_MODULE_AP_ARG[] = WIFI_DRIVER_MODULE_AP_ARG;
 #endif
 static const char FIRMWARE_LOADER[]     = WIFI_FIRMWARE_LOADER;
@@ -318,7 +318,17 @@ int wifi_load_driver()
 			     close(pid_fd);
 			     close(vid_fd);
 			     break;
-			 }
+             } else if (strcmp(buf, "5370") == 0) {
+				ALOGE("rt5370 Wi-Fi Module 1");
+				//wifi module 1 rt5370
+				strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME3);
+				strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME3 " ");
+				strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH3);
+				strcpy(DRIVER_MODULE_ARG, "nohwcrypt=1");
+				close(pid_fd);
+				close(vid_fd);
+				break;
+             }
 			 close(pid_fd);
 		     }
 		 }
