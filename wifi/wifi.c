@@ -23,17 +23,6 @@
 #include <unistd.h>
 #include <poll.h>
 
-#ifdef USES_TI_MAC80211
-#include <dirent.h>
-#include <net/if.h>
-#include <netlink/genl/genl.h>
-#include <netlink/genl/family.h>
-#include <netlink/genl/ctrl.h>
-#include <netlink/msg.h>
-#include <netlink/attr.h>
-#include <linux/nl80211.h>
-#endif
-
 #include "hardware_legacy/wifi.h"
 #ifdef LIBWPA_CLIENT_EXISTS
 #include "libwpa_client/wpa_ctrl.h"
@@ -86,18 +75,8 @@ static char primary_iface[PROPERTY_VALUE_MAX];
 // TODO: use new ANDROID_SOCKET mechanism, once support for multiple
 // sockets is in
 
-#ifdef USES_TI_MAC80211
-#define P2P_INTERFACE			"p2p0"
-struct nl_sock *nl_soc;
-struct nl_cache *nl_cache;
-struct genl_family *nl80211;
-#endif
-
 #ifndef WIFI_DRIVER_MODULE_ARG
 #define WIFI_DRIVER_MODULE_ARG          ""
-#endif
-#ifndef WIFI_DRIVER_MODULE_AP_ARG
-#define WIFI_DRIVER_MODULE_AP_ARG       ""
 #endif
 #ifndef WIFI_FIRMWARE_LOADER
 #define WIFI_FIRMWARE_LOADER		""
@@ -114,31 +93,18 @@ struct genl_family *nl80211;
 #define WIFI_DRIVER_FW_PATH_P2P		NULL
 #endif
 
-#ifdef WIFI_EXT_MODULE_NAME
-static const char EXT_MODULE_NAME[] = WIFI_EXT_MODULE_NAME;
-#ifdef WIFI_EXT_MODULE_ARG
-static const char EXT_MODULE_ARG[] = WIFI_EXT_MODULE_ARG;
-#else
-static const char EXT_MODULE_ARG[] = "";
-#endif
-#endif
-#ifdef WIFI_EXT_MODULE_PATH
-static const char EXT_MODULE_PATH[] = WIFI_EXT_MODULE_PATH;
-#endif
-
 #ifndef WIFI_DRIVER_FW_PATH_PARAM
 #define WIFI_DRIVER_FW_PATH_PARAM	"/sys/module/wlan/parameters/fwpath"
 #endif
 
 #define WIFI_DRIVER_LOADER_DELAY	1000000
+#define SYSFS_PATH_MAX			256
 
 static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 #ifdef WIFI_DRIVER_MODULE_PATH
-char DRIVER_MODULE_NAME[16]  = WIFI_DRIVER_MODULE_NAME;
-char DRIVER_MODULE_TAG[16]   = WIFI_DRIVER_MODULE_NAME " ";
-char DRIVER_MODULE_PATH[64]  = WIFI_DRIVER_MODULE_PATH;
-char DRIVER_MODULE_ARG[16]   = WIFI_DRIVER_MODULE_ARG;
-static const char DRIVER_MODULE_AP_ARG[] = WIFI_DRIVER_MODULE_AP_ARG;
+static const char DRIVER_NAME_PROP[]    = "wlan.modname";
+static const char DRIVER_PATH_PROP[]    = "wlan.modpath";
+static const char DRIVER_MODULE_ARG[]   = WIFI_DRIVER_MODULE_ARG;
 #endif
 static const char FIRMWARE_LOADER[]     = WIFI_FIRMWARE_LOADER;
 static const char DRIVER_PROP_NAME[]    = "wlan.driver.status";
@@ -151,6 +117,9 @@ static const char SUPP_CONFIG_FILE[]    = "/data/misc/wifi/wpa_supplicant.conf";
 static const char P2P_CONFIG_FILE[]     = "/data/misc/wifi/p2p_supplicant.conf";
 static const char CONTROL_IFACE_PATH[]  = "/data/misc/wifi/sockets";
 static const char MODULE_FILE[]         = "/proc/modules";
+static const char SYSFS_CLASS_NET[]     = "/sys/class/net";
+static const char MODULE_DEFAULT_DIR[]  = "/system/lib/modules";
+static const char SYS_MOD_NAME_DIR[]    = "device/driver/module";
 
 static const char IFNAME[]              = "IFNAME=";
 #define IFNAMELEN			(sizeof(IFNAME) - 1)
@@ -166,38 +135,6 @@ static unsigned char dummy_key[21] = { 0x02, 0x11, 0xbe, 0x33, 0x43, 0x35,
 static char supplicant_name[PROPERTY_VALUE_MAX];
 /* Is either SUPP_PROP_NAME or P2P_PROP_NAME */
 static char supplicant_prop_name[PROPERTY_KEY_MAX];
-
-
-#ifdef SAMSUNG_WIFI
-char* get_samsung_wifi_type()
-{
-    char buf[10];
-    int fd = open("/data/.cid.info", O_RDONLY);
-    if (fd < 0)
-        return NULL;
-
-    if (read(fd, buf, sizeof(buf)) < 0) {
-        close(fd);
-        return NULL;
-    }
-
-    close(fd);
-
-    if (strncmp(buf, "murata", 6) == 0)
-        return "_murata";
-
-    if (strncmp(buf, "semcove", 7) == 0)
-        return "_semcove";
-
-    if (strncmp(buf, "semcosh", 7) == 0)
-        return "_semcosh";
-
-    if (strncmp(buf, "semco", 5) == 0)
-        return "_semco";
-
-    return NULL;
-}
-#endif
 
 static int insmod(const char *filename, const char *args)
 {
@@ -257,18 +194,93 @@ const char *get_dhcp_error_string() {
     return dhcp_lasterror();
 }
 
-int is_wifi_driver_loaded() {
-    char driver_status[PROPERTY_VALUE_MAX];
 #ifdef WIFI_DRIVER_MODULE_PATH
-    FILE *proc;
-    char line[sizeof(DRIVER_MODULE_TAG)+10];
+static int get_driver_path(const char *mod, const char *path, char *buf) {
+    DIR *dir;
+    struct dirent *de;
+    char modpath[SYSFS_PATH_MAX];
+    int ret = 0;
+
+    if ((dir = opendir(path))) {
+        while ((de = readdir(dir))) {
+            struct stat sb;
+            if (de->d_name[0] == '.')
+                continue;
+            snprintf(modpath, SYSFS_PATH_MAX, "%s/%s", path, de->d_name);
+            if (!strcmp(de->d_name, mod)) {
+                strncpy(buf, modpath, SYSFS_PATH_MAX - 1);
+                buf[SYSFS_PATH_MAX - 1] = '\0';
+                ret = 1;
+                break;
+            }
+            if (!stat(modpath, &sb) && (sb.st_mode & S_IFMT) == S_IFDIR)
+                if ((ret = get_driver_path(mod, modpath, buf)))
+                    break;
+        }
+        closedir(dir);
+    }
+    return ret;
+}
+
+static int get_driver_info(char *buf) {
+    DIR *netdir;
+    struct dirent *de;
+    char path[SYSFS_PATH_MAX];
+    char link[SYSFS_PATH_MAX];
+    int ret = 0;
+
+    if ((netdir = opendir(SYSFS_CLASS_NET))) {
+        while ((de = readdir(netdir))) {
+            int cnt;
+            char *pos;
+            if (de->d_name[0] == '.')
+                continue;
+            snprintf(path, SYSFS_PATH_MAX, "%s/%s/wireless", SYSFS_CLASS_NET, de->d_name);
+            if (access(path, F_OK)) {
+                snprintf(path, SYSFS_PATH_MAX, "%s/%s/phy80211", SYSFS_CLASS_NET, de->d_name);
+                if (access(path, F_OK))
+                    continue;
+            }
+            /* found the wifi interface */
+            property_set("wlan.interface", de->d_name);
+            snprintf(path, SYSFS_PATH_MAX, "%s/%s/%s", SYSFS_CLASS_NET, de->d_name, SYS_MOD_NAME_DIR);
+            if ((cnt = readlink(path, link, SYSFS_PATH_MAX - 1)) < 0) {
+                ALOGW("can not find link of %s", path);
+                continue;
+            }
+            link[cnt] = '\0';
+            if ((pos = strrchr(link, '/'))) {
+                property_set(DRIVER_NAME_PROP, ++pos);
+                strncpy(buf, pos, PROPERTY_VALUE_MAX - 1);
+                buf[PROPERTY_VALUE_MAX - 1] = '\0';
+                ret = 1;
+                break;
+            }
+        }
+        closedir(netdir);
+    }
+
+    return ret;
+}
 #endif
 
-    if (!property_get(DRIVER_PROP_NAME, driver_status, NULL)
-            || strcmp(driver_status, "ok") != 0) {
-        return 0;  /* driver not loaded */
-    }
+int is_wifi_driver_loaded() {
 #ifdef WIFI_DRIVER_MODULE_PATH
+    char modname[PROPERTY_VALUE_MAX];
+    char line[PROPERTY_VALUE_MAX];
+    FILE *proc;
+    int cnt = property_get(DRIVER_NAME_PROP, modname, NULL);
+
+    if (!cnt) {
+        if (get_driver_info(modname))
+            cnt = strlen(modname);
+        else if (property_get("wlan.interface", line, NULL))
+            return 1; // found an interface without modname, assume built-in
+        else
+            goto unloaded;
+    }
+    modname[cnt++] = ' ';
+
     /*
      * If the property says the driver is loaded, check to
      * make sure that the property setting isn't just left
@@ -277,16 +289,18 @@ int is_wifi_driver_loaded() {
      */
     if ((proc = fopen(MODULE_FILE, "r")) == NULL) {
         ALOGW("Could not open %s: %s", MODULE_FILE, strerror(errno));
-        property_set(DRIVER_PROP_NAME, "unloaded");
-        return 0;
+        goto unloaded;
     }
+
     while ((fgets(line, sizeof(line), proc)) != NULL) {
-        if (strncmp(line, DRIVER_MODULE_TAG, strlen(DRIVER_MODULE_TAG)) == 0) {
+        if (strncmp(line, modname, cnt) == 0) {
             fclose(proc);
             return 1;
         }
     }
     fclose(proc);
+
+unloaded:
     property_set(DRIVER_PROP_NAME, "unloaded");
     return 0;
 #else
@@ -298,99 +312,24 @@ int wifi_load_driver()
 {
 #ifdef WIFI_DRIVER_MODULE_PATH
     char driver_status[PROPERTY_VALUE_MAX];
+    char modname[PROPERTY_VALUE_MAX];
+    char modpath[SYSFS_PATH_MAX];
     int count = 100; /* wait at most 20 seconds for completion */
-    char module_arg2[256];
 
-#ifdef WIFI_DRIVER_MODULE_NAME2
-     char node[50] = {'\0',};
-     char buf[5] = {'\0',};
-     DIR *dir = opendir("/sys/bus/usb/devices/");
-     struct dirent *dent;
-     if (dir != NULL) {
-	 while ((dent = readdir(dir)) != NULL) {
-	     memset(node, '\0', 50);
-	     sprintf(node, "/sys/bus/usb/devices/%s/idVendor", dent->d_name);
-	     int vid_fd = open(node, O_RDONLY);
-	     memset(buf, '\0', 5);
-	     if (vid_fd > 0) {
-		 read(vid_fd, buf, 4);
-		 ALOGE("node = %s, vid = %s", node, buf);
-				if (strcmp(buf, "0bda") == 0 || 
-                        strcmp(buf, "148f") == 0 || strcmp(buf, "7392") == 0) {
-		     sprintf(node, "/sys/bus/usb/devices/%s/idProduct", dent->d_name);
-		     int pid_fd = open(node, O_RDONLY);
-		     read(pid_fd, buf, 4);
-		     ALOGE("node = %s, pid = %s", node, buf);
-		     if (pid_fd > 0) {
-			 if (strcmp(buf, "8176") == 0 || strcmp(buf, "7811") == 0 || strcmp(buf, "817a") == 0) {
-			     ALOGE("rtl8192cu Wi-Fi Module 3");
-			     //wifi module 3 rtl8192cu
-			     strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME2);
-			     strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME2 " ");
-			     strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH2);
-			     close(pid_fd);
-			     close(vid_fd);
-			     break;
-			 } else if (strcmp(buf, "8172") == 0) {
-			     ALOGE("rtl8191su Wi-Fi Module 2");
-			     //wifi module 2 rtl8192cu
-			     strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME);
-			     strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME " ");
-			     strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH);
-			     close(pid_fd);
-			     close(vid_fd);
-			     break;
-             } else if (strcmp(buf, "5370") == 0 || strcmp(buf, "5572") == 0) {
-				ALOGE("rt5370 Wi-Fi Module 1");
-				//wifi module 1 rt5370 and 4 RT5572N
-				strcpy(DRIVER_MODULE_NAME, WIFI_DRIVER_MODULE_NAME3);
-				strcpy(DRIVER_MODULE_TAG, WIFI_DRIVER_MODULE_NAME3 " ");
-				strcpy(DRIVER_MODULE_PATH, WIFI_DRIVER_MODULE_PATH3);
-				strcpy(DRIVER_MODULE_ARG, "nohwcrypt=1");
-				close(pid_fd);
-				close(vid_fd);
-				break;
-             }
-			 close(pid_fd);
-		     }
-		 }
-		 close(vid_fd);
-	     }
-	 }
-     }
-     close(dir);
-
-	ALOGE("DRIVER_MODULE_NAME = %s", DRIVER_MODULE_NAME);
-	ALOGE("DRIVER_MODULE_PATH = %s", DRIVER_MODULE_PATH);
-#endif
-#ifdef SAMSUNG_WIFI
-    char* type = get_samsung_wifi_type();
-
-    if (wifi_mode == 1) {
-        snprintf(module_arg2, sizeof(module_arg2), "%s%s", DRIVER_MODULE_AP_ARG, type == NULL ? "" : type);
-    } else {
-        snprintf(module_arg2, sizeof(module_arg2), "%s%s", DRIVER_MODULE_ARG, type == NULL ? "" : type);
+    if (is_wifi_driver_loaded()) {
+        return 0;
     }
 
-    if (insmod(DRIVER_MODULE_PATH, module_arg2) < 0) {
-#else
-
-    property_set(DRIVER_PROP_NAME, "loading");
-
-#ifdef WIFI_EXT_MODULE_PATH
-    if (insmod(EXT_MODULE_PATH, EXT_MODULE_ARG) < 0)
-        return -1;
-    usleep(200000);
-#endif
-
-    if (insmod(DRIVER_MODULE_PATH, DRIVER_MODULE_ARG) < 0) {
-#endif
-
-#ifdef WIFI_EXT_MODULE_NAME
-        rmmod(EXT_MODULE_NAME);
-#endif
-        return -1;
+    if (!property_get(DRIVER_PATH_PROP, modpath, NULL)) {
+        property_get(DRIVER_NAME_PROP, modname, NULL);
+        strcat(modname, ".ko");
+        if (!get_driver_path(modname, MODULE_DEFAULT_DIR, modpath))
+            strcpy(modpath, WIFI_DRIVER_MODULE_PATH);
     }
+
+    ALOGI("got module path %s", modpath);
+    if (insmod(modpath, DRIVER_MODULE_ARG) < 0)
+        return -1;
 
     if (strcmp(FIRMWARE_LOADER,"") == 0) {
         /* usleep(WIFI_DRIVER_LOADER_DELAY); */
@@ -402,9 +341,10 @@ int wifi_load_driver()
     sched_yield();
     while (count-- > 0) {
         if (property_get(DRIVER_PROP_NAME, driver_status, NULL)) {
-            if (strcmp(driver_status, "ok") == 0)
+            if (strcmp(driver_status, "ok") == 0) {
+                get_driver_info(modname);
                 return 0;
-            else if (strcmp(driver_status, "failed") == 0) {
+            } else if (strcmp(DRIVER_PROP_NAME, "failed") == 0) {
                 wifi_unload_driver();
                 return -1;
             }
@@ -424,7 +364,11 @@ int wifi_unload_driver()
 {
     usleep(200000); /* allow to finish interface down */
 #ifdef WIFI_DRIVER_MODULE_PATH
-    if (rmmod(DRIVER_MODULE_NAME) == 0) {
+    char modname[PROPERTY_VALUE_MAX];
+    if (!property_get(DRIVER_NAME_PROP, modname, NULL))
+        return -1;
+
+    if (rmmod(modname) == 0) {
         int count = 20; /* wait at most 10 seconds for completion */
         while (count-- > 0) {
             if (!is_wifi_driver_loaded())
@@ -433,14 +377,10 @@ int wifi_unload_driver()
         }
         usleep(500000); /* allow card removal */
         if (count) {
-#ifdef WIFI_EXT_MODULE_NAME
-            if (rmmod(EXT_MODULE_NAME) == 0)
-#endif
             return 0;
         }
-        return -1;
-    } else
-        return -1;
+    }
+    return -1;
 #else
     property_set(DRIVER_PROP_NAME, "unloaded");
     return 0;
@@ -556,220 +496,6 @@ int ensure_config_file_exists(const char *config_file)
     return 0;
 }
 
-#ifdef USES_TI_MAC80211
-static int init_nl()
-{
-    int err;
-
-    nl_soc = nl_socket_alloc();
-    if (!nl_soc) {
-        ALOGE("Failed to allocate netlink socket.");
-        return -ENOMEM;
-    }
-
-    if (genl_connect(nl_soc)) {
-        ALOGE("Failed to connect to generic netlink.");
-        err = -ENOLINK;
-        goto out_handle_destroy;
-    }
-
-    genl_ctrl_alloc_cache(nl_soc, &nl_cache);
-    if (!nl_cache) {
-        ALOGE("Failed to allocate generic netlink cache.");
-        err = -ENOMEM;
-        goto out_handle_destroy;
-    }
-
-    nl80211 = genl_ctrl_search_by_name(nl_cache, "nl80211");
-    if (!nl80211) {
-        ALOGE("nl80211 not found.");
-        err = -ENOENT;
-        goto out_cache_free;
-    }
-
-    return 0;
-
-out_cache_free:
-    nl_cache_free(nl_cache);
-out_handle_destroy:
-    nl_socket_free(nl_soc);
-    return err;
-}
-
-static void deinit_nl()
-{
-    genl_family_put(nl80211);
-    nl_cache_free(nl_cache);
-    nl_socket_free(nl_soc);
-}
-
-// ignore the "." and ".." entries
-static int dir_filter(const struct dirent *name)
-{
-    if (0 == strcmp("..", name->d_name) ||
-        0 == strcmp(".", name->d_name))
-            return 0;
-
-    return 1;
-}
-
-// lookup the only active phy
-int phy_lookup()
-{
-    char buf[200];
-    int fd, pos;
-    struct dirent **namelist;
-    int n, i;
-
-    n = scandir("/sys/class/ieee80211", &namelist, dir_filter,
-                (int (*)(const struct dirent**, const struct dirent**))alphasort);
-    if (n != 1) {
-        ALOGE("unexpected - found %d phys in /sys/class/ieee80211", n);
-        for (i = 0; i < n; i++)
-            free(namelist[i]);
-        free(namelist);
-        return -1;
-    }
-
-    snprintf(buf, sizeof(buf), "/sys/class/ieee80211/%s/index",
-             namelist[0]->d_name);
-    free(namelist[0]);
-    free(namelist);
-
-    fd = open(buf, O_RDONLY);
-    if (fd < 0)
-        return -1;
-    pos = read(fd, buf, sizeof(buf) - 1);
-    if (pos < 0) {
-        close(fd);
-        return -1;
-    }
-    buf[pos] = '\0';
-    close(fd);
-    return atoi(buf);
-}
-
-int nl_error_handler(struct sockaddr_nl *nla, struct nlmsgerr *err, void *arg)
-{
-    int *ret = (int *)arg;
-    *ret = err->error;
-    return NL_STOP;
-}
-
-int nl_finish_handler(struct nl_msg *msg, void *arg)
-{
-     int *ret = (int *)arg;
-     *ret = 0;
-     return NL_SKIP;
-}
-
-int nl_ack_handler(struct nl_msg *msg, void *arg)
-{
-    int *ret = (int *)arg;
-    *ret = 0;
-    return NL_STOP;
-}
-
-static int execute_nl_interface_cmd(const char *iface,
-                                    enum nl80211_iftype type,
-                                    uint8_t cmd)
-{
-    struct nl_cb *cb;
-    struct nl_msg *msg;
-    int devidx = 0;
-    int err;
-    int add_interface = (cmd == NL80211_CMD_NEW_INTERFACE);
-
-    if (add_interface) {
-        devidx = phy_lookup();
-    } else {
-        devidx = if_nametoindex(iface);
-        if (devidx == 0) {
-            ALOGE("failed to translate ifname to idx");
-            return -errno;
-        }
-    }
-
-    msg = nlmsg_alloc();
-    if (!msg) {
-        ALOGE("failed to allocate netlink message");
-        return 2;
-    }
-
-    cb = nl_cb_alloc(NL_CB_DEFAULT);
-    if (!cb) {
-        ALOGE("failed to allocate netlink callbacks");
-        err = 2;
-        goto out_free_msg;
-    }
-
-    genlmsg_put(msg, 0, 0, genl_family_get_id(nl80211), 0, 0, cmd, 0);
-
-    if (add_interface) {
-        NLA_PUT_U32(msg, NL80211_ATTR_WIPHY, devidx);
-    } else {
-        NLA_PUT_U32(msg, NL80211_ATTR_IFINDEX, devidx);
-    }
-
-    if (add_interface) {
-        NLA_PUT_STRING(msg, NL80211_ATTR_IFNAME, iface);
-        NLA_PUT_U32(msg, NL80211_ATTR_IFTYPE, type);
-    }
-
-    err = nl_send_auto_complete(nl_soc, msg);
-    if (err < 0)
-        goto out;
-
-    err = 1;
-
-    nl_cb_err(cb, NL_CB_CUSTOM, nl_error_handler, &err);
-    nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, nl_finish_handler, &err);
-    nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, nl_ack_handler, &err);
-
-    while (err > 0)
-        nl_recvmsgs(nl_soc, cb);
-out:
-    nl_cb_put(cb);
-out_free_msg:
-    nlmsg_free(msg);
-    return err;
-nla_put_failure:
-    ALOGW("building message failed");
-    return 2;
-}
-
-int add_remove_p2p_interface(int add)
-{
-    int ret;
-
-    ret = init_nl();
-    if (ret != 0)
-        return ret;
-
-    if (add) {
-        ret = execute_nl_interface_cmd(P2P_INTERFACE, NL80211_IFTYPE_STATION,
-                                       NL80211_CMD_NEW_INTERFACE);
-        if (ret != 0) {
-            ALOGE("could not add P2P interface: %d", ret);
-            goto cleanup;
-        }
-    } else {
-        ret = execute_nl_interface_cmd(P2P_INTERFACE, NL80211_IFTYPE_STATION,
-                                       NL80211_CMD_DEL_INTERFACE);
-        if (ret != 0) {
-            ALOGE("could not remove P2P interface: %d", ret);
-            goto cleanup;
-        }
-    }
-
-    ALOGD("added/removed p2p interface. add: %d", add);
-
-cleanup:
-    deinit_nl();
-    return ret;
-}
-#endif /* USES_TI_MAC80211 */
-
 int wifi_start_supplicant(int p2p_supported)
 {
     char supp_status[PROPERTY_VALUE_MAX] = {'\0'};
@@ -810,13 +536,6 @@ int wifi_start_supplicant(int p2p_supported)
         ALOGE("Wi-Fi entropy file was not created");
     }
 
-#ifdef USES_TI_MAC80211
-    if (p2p_supported && add_remove_p2p_interface(1) < 0) {
-        ALOGE("Wi-Fi - could not create p2p interface");
-        return -1;
-    }
-#endif
-
     /* Clear out any stale socket files that might be left over. */
     wpa_ctrl_cleanup();
 
@@ -836,7 +555,7 @@ int wifi_start_supplicant(int p2p_supported)
         serial = __system_property_serial(pi);
     }
 #endif
-    property_get("wifi.interface", primary_iface, WIFI_TEST_INTERFACE);
+    property_get("wlan.interface", primary_iface, WIFI_TEST_INTERFACE);
 
     property_set("ctl.start", supplicant_name);
     sched_yield();
@@ -888,13 +607,6 @@ int wifi_stop_supplicant(int p2p_supported)
         && strcmp(supp_status, "stopped") == 0) {
         return 0;
     }
-
-#ifdef USES_TI_MAC80211
-    if (p2p_supported && add_remove_p2p_interface(0) < 0) {
-        ALOGE("Wi-Fi - could not remove p2p interface");
-        return -1;
-    }
-#endif
 
     property_set("ctl.stop", supplicant_name);
     sched_yield();
@@ -1000,14 +712,9 @@ int wifi_supplicant_connection_active()
 int wifi_ctrl_recv(char *reply, size_t *reply_len)
 {
     int res;
-    int ctrlfd;
+    int ctrlfd = wpa_ctrl_get_fd(monitor_conn);
     struct pollfd rfds[2];
 
-    if (monitor_conn == NULL) {
-        ALOGE("%s: monitor_conn is NULL\n", __func__);
-        return -2;
-    }
-    ctrlfd = wpa_ctrl_get_fd(monitor_conn);
     memset(rfds, 0, 2 * sizeof(struct pollfd));
     rfds[0].fd = ctrlfd;
     rfds[0].events |= POLLIN;
@@ -1178,7 +885,6 @@ int wifi_change_fw_path(const char *fwpath)
     int fd;
     int ret = 0;
 
-#if !defined(WIFI_VENDOR_REALTEK)
     if (!fwpath)
         return ret;
     fd = TEMP_FAILURE_RETRY(open(WIFI_DRIVER_FW_PATH_PARAM, O_WRONLY));
@@ -1192,7 +898,6 @@ int wifi_change_fw_path(const char *fwpath)
         ret = -1;
     }
     close(fd);
-#endif
     return ret;
 }
 
