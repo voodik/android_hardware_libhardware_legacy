@@ -242,7 +242,7 @@ static int get_driver_info(char *buf) {
                     continue;
             }
             /* found the wifi interface */
-            property_set("wlan.interface", de->d_name);
+//            property_set("wlan.interface", de->d_name);
             snprintf(path, SYSFS_PATH_MAX, "%s/%s/%s", SYSFS_CLASS_NET, de->d_name, SYS_MOD_NAME_DIR);
             if ((cnt = readlink(path, link, SYSFS_PATH_MAX - 1)) < 0) {
                 ALOGW("can not find link of %s", path);
@@ -885,6 +885,7 @@ int wifi_change_fw_path(const char *fwpath)
     int fd;
     int ret = 0;
 
+/*
     if (!fwpath)
         return ret;
     fd = TEMP_FAILURE_RETRY(open(WIFI_DRIVER_FW_PATH_PARAM, O_WRONLY));
@@ -898,6 +899,7 @@ int wifi_change_fw_path(const char *fwpath)
         ret = -1;
     }
     close(fd);
+*/
     return ret;
 }
 
