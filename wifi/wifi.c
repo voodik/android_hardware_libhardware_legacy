@@ -103,6 +103,8 @@ static char primary_iface[PROPERTY_VALUE_MAX];
 #define WIFI_DRIVER_LOADER_DELAY	1000000
 #define SYSFS_PATH_MAX			256
 
+static const char RALINK_DRIVER_MODULE_ARG[]    = "nohwcrypt=y";
+
 static const char IFACE_DIR[]           = "/data/system/wpa_supplicant";
 #ifdef WIFI_DRIVER_MODULE_PATH
 static const char DRIVER_NAME_PROP[]    = "wlan.modname";
@@ -342,6 +344,7 @@ int wifi_load_driver()
     char driver_status[PROPERTY_VALUE_MAX];
     char modname[PROPERTY_VALUE_MAX];
     char modpath[SYSFS_PATH_MAX];
+    char modarg[SYSFS_PATH_MAX] = "";
     int count = 100; /* wait at most 20 seconds for completion */
 
     if (is_wifi_driver_loaded()) {
@@ -350,13 +353,19 @@ int wifi_load_driver()
 
     if (!property_get(DRIVER_PATH_PROP, modpath, NULL)) {
         property_get(DRIVER_NAME_PROP, modname, NULL);
+	if (strcmp(modname, "rt2800usb") == 0) {
+	    strcpy(modarg, RALINK_DRIVER_MODULE_ARG);
+	}
+        else {
+            strcpy(modarg, DRIVER_MODULE_ARG);
+        }
         strcat(modname, ".ko");
         if (!get_driver_path(modname, MODULE_DEFAULT_DIR, modpath))
             strcpy(modpath, WIFI_DRIVER_MODULE_PATH);
     }
 
     ALOGI("got module path %s", modpath);
-    if (insmod(modpath, DRIVER_MODULE_ARG) < 0)
+    if (insmod(modpath, modarg) < 0)
         return -1;
 
     if (strcmp(FIRMWARE_LOADER,"") == 0) {
